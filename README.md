@@ -1,3 +1,5 @@
+This repository is a copy of https://github.com/XifengGuo/CapsNet-Keras where I changed the code in order to make it work on Python 2.7.6.
+
 # CapsNet-Keras
 [![License](https://img.shields.io/github/license/mashape/apistatus.svg?maxAge=2592000)](https://github.com/XifengGuo/CapsNet-Keras/blob/master/LICENSE)
 
@@ -41,11 +43,16 @@ pip install tensorflow-gpu
 pip install keras
 ```
 
-**Step 2. Clone this repository to local.**
+**Step 2. Clone this repository to local with higher keras / tensorflow versions.**
 ```
 git clone https://github.com/XifengGuo/CapsNet-Keras.git
 cd CapsNet-Keras
+
 ```
+**Step 2. Clone this repository to local with Python2.7.6.**
+```
+git clone https://github.com/tchaton/CapsNet-Keras-py2.7
+cd CapsNet-Keras
 
 **Step 3. Train a CapsNet on MNIST**  
 
