@@ -18,9 +18,19 @@ Author: Xifeng Guo, E-mail: `guoxifeng1990@163.com`, Github: `https://github.com
 
 from keras import layers, models, optimizers
 from keras import backend as K
-from keras.utils import to_categorical
+#from keras.utils import to_categorical
 from capsulelayers import CapsuleLayer, PrimaryCap, Length, Mask
 
+def selu(x):
+    """Scaled Exponential Linear Unit. (Klambauer et al., 2017)
+    # Arguments
+        x: A tensor or variable to compute the activation function for.
+    # References
+        - [Self-Normalizing Neural Networks](https://arxiv.org/abs/1706.02515)
+    """
+    alpha = 1.6732632423543772848170429916717
+    scale = 1.0507009873554804934193349852946
+    return scale * K.elu(x, alpha)
 
 def CapsNet(input_shape, n_class, num_routing):
     """
@@ -33,20 +43,22 @@ def CapsNet(input_shape, n_class, num_routing):
     x = layers.Input(shape=input_shape)
 
     # Layer 1: Just a conventional Conv2D layer
-    conv1 = layers.Conv2D(filters=256, kernel_size=9, strides=1, padding='valid', activation='relu', name='conv1')(x)
+    conv1 = layers.Convolution2D(256, 9, 9, border_mode='valid', activation='relu', name='conv1')(x)
 
     # Layer 2: Conv2D layer with `squash` activation, then reshape to [None, num_capsule, dim_vector]
     primarycaps = PrimaryCap(conv1, dim_vector=8, n_channels=32, kernel_size=9, strides=2, padding='valid')
 
     # Layer 3: Capsule layer. Routing algorithm works here.
+    #print(primarycaps.get_shape())
     digitcaps = CapsuleLayer(num_capsule=n_class, dim_vector=16, num_routing=num_routing, name='digitcaps')(primarycaps)
-
+    #print(digitcaps.get_shape())
     # Layer 4: This is an auxiliary layer to replace each capsule with its length. Just to match the true label's shape.
     # If using tensorflow, this will not be necessary. :)
     out_caps = Length(name='out_caps')(digitcaps)
 
     # Decoder network.
     y = layers.Input(shape=(n_class,))
+    #print(y.get_shape(),digitcaps.get_shape())
     masked = Mask()([digitcaps, y])  # The true label is used to mask the output of capsule layer.
     x_recon = layers.Dense(512, activation='relu')(masked)
     x_recon = layers.Dense(1024, activation='relu')(x_recon)
@@ -82,11 +94,10 @@ def train(model, data, args):
     (x_train, y_train), (x_test, y_test) = data
 
     # callbacks
+    print(args)
     log = callbacks.CSVLogger(args.save_dir + '/log.csv')
-    tb = callbacks.TensorBoard(log_dir=args.save_dir + '/tensorboard-logs',
-                               batch_size=args.batch_size, histogram_freq=args.debug)
-    checkpoint = callbacks.ModelCheckpoint(args.save_dir + '/weights-{epoch:02d}.h5',
-                                           save_best_only=True, save_weights_only=True, verbose=1)
+    tb = callbacks.TensorBoard(log_dir=args.save_dir + '/tensorboard-logs')
+    checkpoint = callbacks.ModelCheckpoint(args.save_dir + '/weights-{epoch:02d}.h5',save_best_only=True, save_weights_only=True, verbose=1)
     lr_decay = callbacks.LearningRateScheduler(schedule=lambda epoch: args.lr * (0.9 ** epoch))
 
     # compile the model
@@ -112,10 +123,9 @@ def train(model, data, args):
 
     # Training with data augmentation. If shift_fraction=0., also no augmentation.
     model.fit_generator(generator=train_generator(x_train, y_train, args.batch_size, args.shift_fraction),
-                        steps_per_epoch=int(y_train.shape[0] / args.batch_size),
-                        epochs=args.epochs,
-                        validation_data=[[x_test, y_test], [y_test, x_test]],
-                        callbacks=[log, tb, checkpoint, lr_decay])
+                        samples_per_epoch=int(y_train.shape[0] / args.batch_size),
+                        nb_epoch=args.epochs,
+                        validation_data=[[x_test, y_test], [y_test, x_test]])
     # End: Training with data augmentation -----------------------------------------------------------------------#
 
     model.save_weights(args.save_dir + '/trained_model.h5')
@@ -154,9 +164,29 @@ def load_mnist():
 
     x_train = x_train.reshape(-1, 28, 28, 1).astype('float32') / 255.
     x_test = x_test.reshape(-1, 28, 28, 1).astype('float32') / 255.
-    y_train = to_categorical(y_train.astype('float32'))
-    y_test = to_categorical(y_test.astype('float32'))
+    y_train = to_categorical(y_train.astype('float32'),10)
+    y_test = to_categorical(y_test.astype('float32'),10)
+    print(x_train.shape,x_test.shape,y_train.shape,y_test.shape)
     return (x_train, y_train), (x_test, y_test)
+
+def to_categorical(y, num_classes=None):
+    """Converts a class vector (integers) to binary class matrix.
+    E.g. for use with categorical_crossentropy.
+    # Arguments
+        y: class vector to be converted into a matrix
+            (integers from 0 to num_classes).
+        num_classes: total number of classes.
+    # Returns
+        A binary matrix representation of the input.
+    """
+    y = np.array(y, dtype='int').ravel()
+    if not num_classes:
+        num_classes = np.max(y) + 1
+    n = y.shape[0]
+    categorical = np.zeros((n, num_classes))
+    categorical[np.arange(n), y] = 1
+    return categorical
+
 
 
 if __name__ == "__main__":
@@ -164,12 +194,12 @@ if __name__ == "__main__":
     import os
     from keras.preprocessing.image import ImageDataGenerator
     from keras import callbacks
-    from keras.utils.vis_utils import plot_model
+    #from keras.utils.vis_utils import plot_model
 
     # setting the hyper parameters
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', default=100, type=int)
+    parser.add_argument('--batch_size', default=1000, type=int)
     parser.add_argument('--epochs', default=30, type=int)
     parser.add_argument('--lam_recon', default=0.392, type=float)  # 784 * 0.0005, paper uses sum of SE, here uses MSE
     parser.add_argument('--num_routing', default=3, type=int)  # num_routing should > 0
@@ -180,7 +210,7 @@ if __name__ == "__main__":
     parser.add_argument('--weights', default=None)
     parser.add_argument('--lr', default=0.001, type=float)
     args = parser.parse_args()
-    print(args)
+    #print(args.batch_size)
     if not os.path.exists(args.save_dir):
         os.makedirs(args.save_dir)
 
@@ -189,10 +219,10 @@ if __name__ == "__main__":
 
     # define model
     model = CapsNet(input_shape=[28, 28, 1],
-                    n_class=len(np.unique(np.argmax(y_train, 1))),
-                    num_routing=args.num_routing)
+                   n_class=len(np.unique(np.argmax(y_train, 1))),
+                   num_routing=args.num_routing)
     model.summary()
-    plot_model(model, to_file=args.save_dir+'/model.png', show_shapes=True)
+    #plot_model(model, to_file=args.save_dir+'/model.png', show_shapes=True)
 
     # train or test
     if args.weights is not None:  # init the model weights with provided one

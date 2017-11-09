@@ -9,7 +9,8 @@ Author: Xifeng Guo, E-mail: `guoxifeng1990@163.com`, Github: `https://github.com
 
 import keras.backend as K
 import tensorflow as tf
-from keras import initializers, layers
+from keras import  initializations, layers
+import numpy as np
 
 
 class Length(layers.Layer):
@@ -42,12 +43,18 @@ class Mask(layers.Layer):
             mask = K.clip(x, 0, 1)  # the max value in x clipped to 1 and other to 0
 
         # masked inputs, shape = [batch_size, dim_vector]
-        inputs_masked = K.batch_dot(inputs, mask, [1, 1])
-        return inputs_masked
+        #print(inputs.get_shape(),mask.get_shape())
+        mask = tf.expand_dims(mask,2)
+        inputs_masked = K.batch_dot(inputs,mask,axes=(1,1))
+        #print('inputs_masked.get_shape() ',tf.squeeze(inputs_masked,[2]).get_shape())
+        return tf.squeeze(inputs_masked,[2])
 
-    def compute_output_shape(self, input_shape):
+    def get_output_shape_for(self, input_shape):
+        return tuple([None, 16])
+        #print(input_shape)
         if type(input_shape[0]) is tuple:  # true label provided
-            return tuple([None, input_shape[0][-1]])
+            print(input_shape[0][-1])
+            return tuple([None, input_shape[-1]])
         else:
             return tuple([None, input_shape[-1]])
 
@@ -76,15 +83,13 @@ class CapsuleLayer(layers.Layer):
     :param num_routings: number of iterations for the routing algorithm
     """
     def __init__(self, num_capsule, dim_vector, num_routing=3,
-                 kernel_initializer='glorot_uniform',
-                 bias_initializer='zeros',
                  **kwargs):
         super(CapsuleLayer, self).__init__(**kwargs)
         self.num_capsule = num_capsule
         self.dim_vector = dim_vector
         self.num_routing = num_routing
-        self.kernel_initializer = initializers.get(kernel_initializer)
-        self.bias_initializer = initializers.get(bias_initializer)
+        #self.kernel_initializer = initializations.get(kernel_initializer)
+        #self.bias_initializer = initializers.get(bias_initializer)
 
     def build(self, input_shape):
         assert len(input_shape) >= 3, "The input Tensor should have shape=[None, input_num_capsule, input_dim_vector]"
@@ -92,18 +97,18 @@ class CapsuleLayer(layers.Layer):
         self.input_dim_vector = input_shape[2]
 
         # Transform matrix
-        self.W = self.add_weight(shape=[self.input_num_capsule, self.num_capsule, self.input_dim_vector, self.dim_vector],
-                                 initializer=self.kernel_initializer,
+        self.W = self.add_weight([self.input_num_capsule, self.num_capsule, self.input_dim_vector, self.dim_vector],
+                                 initializer='glorot_uniform',
                                  name='W')
 
         # Coupling coefficient. The redundant dimensions are just to facilitate subsequent matrix calculation.
-        self.bias = self.add_weight(shape=[1, self.input_num_capsule, self.num_capsule, 1, 1],
-                                    initializer=self.bias_initializer,
+        self.bias = self.add_weight([1, self.input_num_capsule, self.num_capsule, 1, 1],
+                                    initializer='zero',
                                     name='bias',
                                     trainable=False)
         self.built = True
 
-    def call(self, inputs, training=None):
+    def call(self, inputs, mask=None, training=None):
         # inputs.shape=[None, input_num_capsule, input_dim_vector]
         # Expand dims to [None, input_num_capsule, 1, 1, input_dim_vector]
         inputs_expand = K.expand_dims(K.expand_dims(inputs, 2), 2)
@@ -152,13 +157,16 @@ class CapsuleLayer(layers.Layer):
         # Routing algorithm V2. Use iteration. V2 and V1 both work without much difference on performance
         assert self.num_routing > 0, 'The num_routing should be > 0.'
         for i in range(self.num_routing):
-            c = tf.nn.softmax(self.bias, dim=2)  # dim=2 is the num_capsule dimension
-            # outputs.shape=[None, 1, num_capsule, 1, dim_vector]
+            #exp = tf.exp(self.bias)
+            exp = tf.exp(self.bias)
+            c = exp / tf.tile(tf.expand_dims(tf.reduce_sum(exp, 2),2), [1, 1, self.num_capsule, 1, 1])
+  # dim=2 is the num_capsule dimension
+                # outputs.shape=[None, 1, num_capsule, 1, dim_vector]
             outputs = squash(K.sum(c * inputs_hat, 1, keepdims=True))
 
-            # last iteration needs not compute bias which will not be passed to the graph any more anyway.
+                # last iteration needs not compute bias which will not be passed to the graph any more anyway.
             if i != self.num_routing - 1:
-                # self.bias = K.update_add(self.bias, K.sum(inputs_hat * outputs, [0, -1], keepdims=True))
+                    # self.bias = K.update_add(self.bias, K.sum(inputs_hat * outputs, [0, -1], keepdims=True))
                 self.bias += K.sum(inputs_hat * outputs, -1, keepdims=True)
             # tf.summary.histogram('BigBee', self.bias)  # for debugging
         # End: routing algorithm V2, static ------------------------------------------------------------#
@@ -167,7 +175,16 @@ class CapsuleLayer(layers.Layer):
 
     def compute_output_shape(self, input_shape):
         return tuple([None, self.num_capsule, self.dim_vector])
-
+def selu(x):
+    """Scaled Exponential Linear Unit. (Klambauer et al., 2017)
+    # Arguments
+        x: A tensor or variable to compute the activation function for.
+    # References
+        - [Self-Normalizing Neural Networks](https://arxiv.org/abs/1706.02515)
+    """
+    alpha = 1.6732632423543772848170429916717
+    scale = 1.0507009873554804934193349852946
+    return scale * K.elu(x, alpha)
 
 def PrimaryCap(inputs, dim_vector, n_channels, kernel_size, strides, padding):
     """
@@ -177,8 +194,8 @@ def PrimaryCap(inputs, dim_vector, n_channels, kernel_size, strides, padding):
     :param n_channels: the number of types of capsules
     :return: output tensor, shape=[None, num_capsule, dim_vector]
     """
-    output = layers.Conv2D(filters=dim_vector*n_channels, kernel_size=kernel_size, strides=strides, padding=padding,
-                           name='primarycap_conv2d')(inputs)
+    #output = layers.Convolution2D(dim_vector*n_channels, kernel_size, kernel_size, border_mode='valid', activation=selu, name='conv1')
+    output = layers.Convolution2D(dim_vector*n_channels, kernel_size, kernel_size, border_mode='valid', subsample=(strides,strides), activation='relu',name='primarycap_conv2d')(inputs)
     outputs = layers.Reshape(target_shape=[-1, dim_vector], name='primarycap_reshape')(output)
     return layers.Lambda(squash, name='primarycap_squash')(outputs)
 
